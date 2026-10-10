@@ -1,4 +1,4 @@
--- luarmor_advanced_hook_with_ui.lua (v4-fix)
+-- astra_hook_monitor.lua
 -- tempel di executor SEBELUM load bootstrap Luarmor
 
 local Players     = game:GetService("Players")
@@ -6,9 +6,16 @@ local HttpService = game:GetService("HttpService")
 local ts          = tostring
 
 -- ============================================================
--- LOAD SIRIUS UI
+-- LOAD ASTRA UI
 -- ============================================================
-local Sirius = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/Ali-lov3/AstraUiLib/refs/heads/main/Source.lua"))()
+
+local Window = Library.CreateWindow({
+    Title        = "Nyx // Hook Monitor",
+    Logo         = 0,
+    Anonymous    = false,
+    ConfigFolder = "NyxConfigs",
+})
 
 -- ============================================================
 -- CONFIG
@@ -19,7 +26,6 @@ local CFG = {
     dedup     = true,
     max_dumps = 200,
     max_log   = 500,
-    sandbox   = false,
 }
 
 local dumped       = {}
@@ -39,226 +45,99 @@ local State = {
 }
 
 -- ============================================================
--- UI
+-- TABS & SECTIONS
 -- ============================================================
-local Window = Sirius:Window({
-    Title       = "Nyx // Luarmor Hook Monitor",
-    Subtitle    = "live hook trace + payload capture + reload",
-    Size        = UDim2.fromOffset(680, 520),
-    Theme       = "Dark",
-    Acrylic     = true,
-    Minimizable = true,
-    ToggleKey   = Enum.KeyCode.RightShift,
-})
+local MainTab     = Window:CreateTab({ Name = "Live Log",   Icon = "scroll-text" })
+local PayloadTab  = Window:CreateTab({ Name = "Payloads",   Icon = "package" })
+local StatsTab    = Window:CreateTab({ Name = "Stats",      Icon = "activity" })
+local CfgTab      = Window:CreateTab({ Name = "Controls",   Icon = "settings" })
 
-local LogTab     = Window:Tab({ Title = "Live Log",   Icon = "scroll-text" })
-local PayloadTab = Window:Tab({ Title = "Payloads",   Icon = "package" })
-local ReloadTab  = Window:Tab({ Title = "Reload",     Icon = "play-circle" })
-local StatsTab   = Window:Tab({ Title = "Stats",      Icon = "activity" })
-local CfgTab     = Window:Tab({ Title = "Controls",   Icon = "settings" })
+local MainSection    = MainTab:CreateSection({ Name = "hook stream",    Side = "Left" })
+local PayloadSection = PayloadTab:CreateSection({ Name = "captured",    Side = "Left" })
+local StatsSection   = StatsTab:CreateSection({ Name = "counters",     Side = "Left" })
+local CtrlSection    = CfgTab:CreateSection({ Name = "hook toggles",   Side = "Left" })
 
--- forward declarations (biar bisa saling refer)
-local ReloadBox
-local push_log
-local refresh_stats
+-- ============================================================
+-- UI ELEMENTS
+-- ============================================================
+local LogLabel = MainSection:AddLabel("waiting for hook events...")
 
--- ---------- LOG TAB ----------
-local LogSection = LogTab:Section({ Title = "hook stream" })
-local LogPara    = LogSection:Paragraph({
-    Title      = "activity",
-    Desc       = "waiting for hook events...",
-    Color      = Color3.fromRGB(180, 180, 190),
-    MaxHeight  = 320,
-    Autoscroll = true,
-})
-LogSection:Button({
-    Title = "clear log",
+MainSection:AddButton({
+    Name = "clear log",
     Callback = function()
         State.log = {}
-        LogPara:SetDesc("cleared.\nwaiting for hook events...")
+        Library.Notify({ Title = "Log", Text = "cleared", Icon = "check", Duration = 2 })
+    end,
+})
+MainSection:AddButton({
+    Name = "copy log to clipboard",
+    Callback = function()
+        if setclipboard then
+            setclipboard(table.concat(State.log, "\n"))
+            Library.Notify({ Title = "Log", Text = "copied", Icon = "check", Duration = 2 })
+        end
     end,
 })
 
--- ---------- PAYLOAD TAB ----------
-local PayloadSection = PayloadTab:Section({ Title = "captured payloads" })
-local PayloadMeta
-local PayloadPreview
-
-local PayloadList = PayloadSection:Dropdown({
-    Title  = "select payload",
-    Values = {},
-    Value  = nil,
-    Callback = function(v)
-        if not v then return end
+local PayloadDropdown = PayloadSection:AddDropdown({
+    Name    = "select payload",
+    Options = {},
+    Default = nil,
+    Callback = function(selected)
         for _, p in ipairs(State.payloads) do
-            if p.label == v then
+            if p.label == selected then
                 State.selected = p
-                if PayloadPreview then PayloadPreview:SetDesc(p.preview) end
-                if PayloadMeta then
-                    PayloadMeta:SetDesc(
-                        "file: " .. p.file .. "\n"
-                        .. "size: " .. p.size .. " bytes\n"
-                        .. "hash: " .. p.hash .. "\n"
-                        .. "time: " .. os.date("%H:%M:%S", p.ts)
-                    )
-                end
-                if ReloadBox then pcall(function() ReloadBox:Set(p.source) end) end
+                Library.Notify({
+                    Title = "Payload",
+                    Text  = p.label .. "\n" .. p.preview:sub(1, 100),
+                    Icon  = "package",
+                    Duration = 4,
+                })
                 break
             end
         end
     end,
 })
 
-PayloadMeta = PayloadSection:Paragraph({
-    Title = "metadata",
-    Desc  = "no payload selected",
-    Color = Color3.fromRGB(160, 200, 255),
-})
-
-PayloadPreview = PayloadSection:Paragraph({
-    Title     = "preview (first 500 chars)",
-    Desc      = "",
-    Color     = Color3.fromRGB(200, 200, 200),
-    MaxHeight = 200,
-})
-
--- ---------- RELOAD TAB ----------
-local ReloadSection = ReloadTab:Section({ Title = "load / execute payload" })
-
-ReloadBox = ReloadSection:TextBox({
-    Title       = "source",
-    Desc        = "edit atau paste source di sini, lalu tekan Load",
-    Placeholder = "-- paste luarmor source atau pilih dari Payloads tab",
-    Value       = "",
-    Multiline   = true,
-    Height      = 260,
-    Callback    = function(v) end,
-})
-
-local ReloadStatus = ReloadSection:Paragraph({
-    Title = "status",
-    Desc  = "idle",
-    Color = Color3.fromRGB(200, 200, 200),
-})
-
-push_log = function(line)
-    table.insert(State.log, line)
-    if #State.log > CFG.max_log then table.remove(State.log, 1) end
-    local text = table.concat(State.log, "\n")
-    pcall(function() LogPara:SetDesc(text) end)
-    if not CFG.silent then print(HOOK_TAG, line) end
-end
-
-refresh_stats = function()
-    local s = State.stats
-    local txt = string.format(
-        "http: %d\nhttpget: %d\nloadstring: %d\nstring.char: %d\ntable.concat: %d\nbit32.bxor: %d\nstring.dump: %d\nenv ops: %d",
-        s.http, s.get, s.load, s.char, s.concat, s.bxor, s.dump, s.env
-    )
-    pcall(function() StatsPara:SetDesc(txt) end)
-    pcall(function() DumpCountLabel:SetDesc(dumped_count .. " / " .. CFG.max_dumps) end)
-    pcall(function() ExecLabel:SetDesc(tostring(State.exec_count)) end)
-end
-
-local function run_source(src, tag)
-    if type(src) ~= "string" or #src < 10 then
-        ReloadStatus:SetDesc("[!] source kosong / terlalu pendek")
-        return
-    end
-
-    local chunk, err
-    if loadstring then
-        chunk, err = loadstring(src, "@nyx_reload_" .. tostring(State.exec_count))
-    elseif load then
-        chunk, err = load(src, "@nyx_reload_" .. tostring(State.exec_count))
-    else
-        ReloadStatus:SetDesc("[!] loadstring tidak tersedia di executor ini")
-        return
-    end
-
-    if not chunk then
-        ReloadStatus:SetDesc("[ERR compile] " .. ts(err))
-        push_log("[RELOAD-ERR] " .. ts(err))
-        return
-    end
-
-    State.exec_count = State.exec_count + 1
-    local id = State.exec_count
-
-    task.spawn(function()
-        local env
-        if CFG.sandbox and setfenv and getfenv then
-            env = setmetatable({}, { __index = getfenv(0) })
-            pcall(setfenv, chunk, env)
-        end
-
-        local ok, err2 = pcall(chunk)
-        if ok then
-            ReloadStatus:SetDesc(("[ok #%d] %s — %d bytes"):format(id, tag or "manual", #src))
-            push_log(("[RELOAD-OK #%d] %d bytes"):format(id, #src))
-        else
-            ReloadStatus:SetDesc(("[ERR runtime #%d] %s"):format(id, ts(err2)))
-            push_log(("[RELOAD-ERR #%d] %s"):format(id, ts(err2)))
-        end
-    end)
-end
-
-ReloadSection:Button({
-    Title    = "load",
-    Callback = function()
-        local src
-        pcall(function() src = ReloadBox:Get() end)
-        if type(src) ~= "string" or src == "" then
-            if State.selected then src = State.selected.source end
-        end
-        run_source(src, "reload-tab")
-    end,
-})
-
-ReloadSection:Button({
-    Title    = "load selected payload",
+PayloadSection:AddButton({
+    Name = "load selected payload",
     Callback = function()
         if not State.selected then
-            ReloadStatus:SetDesc("[!] belum ada payload dipilih")
+            Library.Notify({ Title = "Payload", Text = "none selected", Icon = "alert", Duration = 2 })
             return
         end
-        run_source(State.selected.source, "payload:" .. State.selected.hash)
+        local src = State.selected.source
+        local chunk = (loadstring or load)(src, "@nyx_reload")
+        if chunk then
+            task.spawn(function()
+                local ok, err = pcall(chunk)
+                Library.Notify({
+                    Title = "Reload",
+                    Text  = ok and "ok" or ("err: " .. ts(err)),
+                    Icon  = ok and "check" or "alert",
+                    Duration = 3,
+                })
+            end)
+        end
     end,
 })
-
-ReloadSection:Button({
-    Title    = "clear box",
+PayloadSection:AddButton({
+    Name = "copy source to clipboard",
     Callback = function()
-        pcall(function() ReloadBox:Set("") end)
-        ReloadStatus:SetDesc("cleared")
+        if State.selected and setclipboard then
+            setclipboard(State.selected.source)
+            Library.Notify({ Title = "Payload", Text = "copied", Icon = "check", Duration = 2 })
+        end
     end,
 })
 
--- ---------- STATS TAB ----------
-local StatsSection = StatsTab:Section({ Title = "counters" })
-local StatsPara    = StatsSection:Paragraph({
-    Title = "hook hit count",
-    Desc  = "loading...",
-    Color = Color3.fromRGB(180, 255, 180),
-})
-local DumpCountLabel = StatsSection:Paragraph({
-    Title = "total dumps",
-    Desc  = "0 / " .. CFG.max_dumps,
-    Color = Color3.fromRGB(255, 200, 120),
-})
-local ExecLabel = StatsSection:Paragraph({
-    Title = "reload executions",
-    Desc  = "0",
-    Color = Color3.fromRGB(200, 180, 255),
-})
+local StatsLabel = StatsSection:AddLabel("http: 0\nhttpget: 0\nload: 0\n...")
 
--- ---------- CONTROLS TAB ----------
-local CtrlSection = CfgTab:Section({ Title = "hook toggles" })
+-- ---------- CONTROLS ----------
 local function mkToggle(name, key)
-    CtrlSection:Toggle({
-        Title    = name,
-        Desc     = "enable/disable " .. key .. " hook",
-        Value    = State.toggles[key],
+    CtrlSection:AddToggle({
+        Name    = name,
+        Default = State.toggles[key],
         Callback = function(v) State.toggles[key] = v end,
     })
 end
@@ -272,18 +151,6 @@ mkToggle("debug.sethook",     "sethook")
 mkToggle("debug.getupvalue",  "upvalue")
 mkToggle("string.dump",       "bytedump")
 
-CtrlSection:Toggle({
-    Title    = "sandbox reload (isolated env)",
-    Desc     = "run source di env kosong, __index ke getfenv(0)",
-    Value    = CFG.sandbox,
-    Callback = function(v) CFG.sandbox = v end,
-})
-CtrlSection:Toggle({
-    Title    = "silent mode (hide [N-HOOK] prints)",
-    Value    = CFG.silent,
-    Callback = function(v) CFG.silent = v end,
-})
-
 -- ============================================================
 -- UTILITY
 -- ============================================================
@@ -296,47 +163,51 @@ local function fnv1a(s)
     return string.format("%08x", h)
 end
 
+local function push_log(line)
+    table.insert(State.log, line)
+    if #State.log > CFG.max_log then table.remove(State.log, 1) end
+    if not CFG.silent then print(HOOK_TAG, line) end
+end
+
+local function refresh_stats()
+    local s = State.stats
+    local txt = string.format(
+        "http: %d\nhttpget: %d\nloadstring: %d\nstring.char: %d\ntable.concat: %d\nbit32.bxor: %d\nstring.dump: %d\nenv ops: %d\ndumps: %d",
+        s.http, s.get, s.load, s.char, s.concat, s.bxor, s.dump, s.env, dumped_count
+    )
+    -- AstraUI label update method may vary; try :Set
+    pcall(function() StatsLabel:Set(txt) end)
+end
+
 local function save(name, data)
     if type(data) ~= "string" then return end
     if #data < CFG.dump_min then return end
-    if dumped_count >= CFG.max_dumps then
-        push_log("[!] dump limit reached")
-        return
-    end
-
+    if dumped_count >= CFG.max_dumps then return end
     local hash = fnv1a(data)
     if CFG.dedup and dumped[hash] then return end
     dumped[hash] = true
     dumped_count = dumped_count + 1
-
-    local ts_ms = math.floor(tick() * 1000)
-    local fname = ("dump_%s_%s_%d.lua"):format(name, hash, ts_ms)
+    local fname = ("dump_%s_%s_%d.lua"):format(name, hash, math.floor(tick() * 1000))
     local ok = false
     if writefile then ok = pcall(writefile, fname, data) end
-
-    local preview = data:sub(1, 500)
-    preview = preview:gsub("[%z\1-\8\11\12\14-\31]", ".")
-
+    local preview = data:sub(1, 200):gsub("[%z\1-\8\11\12\14-\31]", ".")
     local entry = {
         file    = fname,
         size    = #data,
         hash    = hash,
         ts      = os.time(),
-        preview = preview .. (#data > 500 and "\n... [truncated]" or ""),
+        preview = preview,
         source  = data,
         label   = ("%s | %d B | %s"):format(name, #data, hash),
     }
     table.insert(State.payloads, entry)
-
-    local values = {}
-    for _, p in ipairs(State.payloads) do values[#values + 1] = p.label end
-    pcall(function() PayloadList:SetValues(values) end)
-
-    push_log(("[DUMP] %s (%d bytes) %s"):format(fname, #data, ok and "ok" or "no-writefile"))
+    local opts = {}
+    for _, p in ipairs(State.payloads) do opts[#opts + 1] = p.label end
+    pcall(function() PayloadDropdown:SetOptions(opts) end)
+    push_log(("[DUMP] %s (%d bytes)"):format(fname, #data))
     refresh_stats()
 end
 
--- FIXED: cuma satu fungsi, gak ada nested duplikat
 local function is_luarmor_url(url)
     url = ts(url or ""):lower()
     return url:find("luarmor%.net")
@@ -350,17 +221,17 @@ local function is_luarmor_url(url)
 end
 
 -- ============================================================
--- 1. request family
+-- HOOKS
 -- ============================================================
+-- 1. request family
 local function wrap_request(fn)
     if type(fn) ~= "function" then return fn end
     return function(args)
         local r = fn(args)
         if State.toggles.http and r and args and args.Url and is_luarmor_url(args.Url) then
-            local body   = r.Body or r.body or ""
-            local status = r.StatusCode or r.status_code or 0
+            local body = r.Body or r.body or ""
             State.stats.http = State.stats.http + 1
-            push_log(("[HTTP] %s -> %d (%d B)"):format(args.Url, status, #body))
+            push_log(("[HTTP] %s -> %d (%d B)"):format(args.Url, r.StatusCode or 0, #body))
             if #body > 0 then save("http", body) end
             refresh_stats()
         end
@@ -379,9 +250,7 @@ if getgenv then
     if g.fluxus and g.fluxus.request then g.fluxus.request = wrap_request(g.fluxus.request)     end
 end
 
--- ============================================================
 -- 2. game.HttpGet
--- ============================================================
 local rawHttpGet = game.HttpGet
 game.HttpGet = function(self, url, ...)
     local body = rawHttpGet(self, url, ...)
@@ -394,9 +263,7 @@ game.HttpGet = function(self, url, ...)
     return body
 end
 
--- ============================================================
 -- 3. loadstring / load
--- ============================================================
 local function wrap_load(fn, tag)
     if type(fn) ~= "function" then return fn end
     return function(src, chunk)
@@ -417,9 +284,7 @@ if getgenv then
     if g.load       then g.load       = wrap_load(g.load, "g.load")     end
 end
 
--- ============================================================
 -- 4. debug.getinfo
--- ============================================================
 local hooked_sources = {}
 if debug and debug.getinfo then
     local rawGetinfo = debug.getinfo
@@ -438,9 +303,7 @@ if debug and debug.getinfo then
     end
 end
 
--- ============================================================
 -- 5. getfenv / setfenv
--- ============================================================
 if getfenv then
     local rawGetfenv = getfenv
     getfenv = function(f)
@@ -473,9 +336,7 @@ if setfenv then
     if getgenv then getgenv().setfenv = setfenv end
 end
 
--- ============================================================
 -- 6. string.char
--- ============================================================
 local rawChar = string.char
 local char_count = 0
 string.char = function(...)
@@ -491,9 +352,7 @@ string.char = function(...)
     return rawChar(...)
 end
 
--- ============================================================
 -- 7. table.concat
--- ============================================================
 local rawConcat = table.concat
 table.concat = function(t, sep, i, j)
     local r = rawConcat(t, sep, i, j)
@@ -507,9 +366,7 @@ table.concat = function(t, sep, i, j)
     return r
 end
 
--- ============================================================
 -- 8. bit32.bxor
--- ============================================================
 if bit32 then
     local rawBxor = bit32.bxor
     local bxor_count = 0
@@ -523,9 +380,7 @@ if bit32 then
     end
 end
 
--- ============================================================
 -- 9. anti-anti-hook spoof
--- ============================================================
 local SPOOFED_FNS = { string.char, table.concat, debug.getinfo, getfenv, setfenv }
 local function spoof_check(fn)
     for _, f in ipairs(SPOOFED_FNS) do if fn == f then return true end end
@@ -546,9 +401,7 @@ if isfunctionhooked then
     end
 end
 
--- ============================================================
 -- 10. debug.sethook
--- ============================================================
 if debug and debug.sethook then
     local rawSethook = debug.sethook
     debug.sethook = function(...)
@@ -563,9 +416,7 @@ if debug and debug.sethook then
     end
 end
 
--- ============================================================
 -- 11. debug.getupvalue
--- ============================================================
 if debug and debug.getupvalue then
     local rawGetUp = debug.getupvalue
     local traced_upvalues = {}
@@ -584,18 +435,14 @@ if debug and debug.getupvalue then
     end
 end
 
--- ============================================================
 -- 12. getrawmetatable
--- ============================================================
 if getrawmetatable then
     local rawGetMt = getrawmetatable
     getrawmetatable = function(o) return rawGetMt(o) end
     if getgenv then getgenv().getrawmetatable = getrawmetatable end
 end
 
--- ============================================================
 -- 13. string.dump
--- ============================================================
 if string.dump then
     local rawDump = string.dump
     string.dump = function(fn, ...)
@@ -615,9 +462,17 @@ end
 -- ============================================================
 push_log("[+] Nyx hook monitor active.")
 push_log("[+] RightShift = toggle window.")
-push_log("[+] Payloads tab -> pilih source, Reload tab -> tekan Load.")
-refresh_stats()
+push_log("[+] Payloads tab -> pilih source, tekan Load Selected.")
+
+pcall(function() LogLabel:Set(table.concat(State.log, "\n")) end)
+
+Library.Notify({
+    Title    = "Nyx",
+    Text     = "Hook monitor active. RightShift to toggle.",
+    Icon     = "check",
+    Duration = 4,
+})
 
 if not CFG.silent then
-    print(HOOK_TAG, "UI installed. RightShift to toggle.")
+    print(HOOK_TAG, "AstraUI installed.")
 end
